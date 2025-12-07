@@ -54,9 +54,12 @@ kalor_terima_buffer = deque(maxlen=max_len)  # Nilai Q terima per data point
 
 # State pencampuran global (untuk diakses di MQTT callback)
 mixing_state_global = {'is_mixing': False, 'massa_dingin': 1.0, 'massa_panas': 1.0}
+lock_state_global = {'is_locked': False, 'locked_dingin': 0.0, 'locked_panas': 0.0}
 
 # ====== KALOR CONFIG ======
-C_AIR = 4186  # Kalor jenis air dalam J/kg°C
+C_AIR = 4200  # Kalor jenis air dalam J/kg°C
+RHO_AIR_DINGIN = 1000  # kg/m^3
+RHO_AIR_PANAS = 480    # kg/m^3
 
 # ====== STORAGE CONFIG ======
 EXCEL_FILE = "data_suhu.xlsx"
@@ -114,32 +117,87 @@ def on_message(client, userdata, msg):
                 timestamps.append(ts_display)
                 
                 # Simpan data Air Dingin
-                data_dingin_c.append(dingin["C"])
-                data_dingin_f.append(dingin["F"])
-                data_dingin_k.append(dingin["K"])
-                data_dingin_r.append(dingin["R"])
+                # Cek status lock
+                if lock_state_global['is_locked']:
+                    val_dingin_c = lock_state_global['locked_dingin']
+                    val_panas_c = lock_state_global['locked_panas']
+                    # Untuk satuan lain, kita bisa hitung manual atau biarkan (karena yang krusial C)
+                    # Untuk simplifikasi visual grafik, kita append nilai locked ke C, 
+                    # tapi F, K, R mungkin akan tetap data sensor asli jika tidak kita konversi juga.
+                    # Agar konsisten "garis lurus", sebaiknya kita konversi juga atau pakai nilai terakhir.
+                    # Namun karena user fokus ke C dan Kalor, kita prioritaskan C.
+                    # Biar rapi, kita pakai data sensor asli untuk F, K, R atau biarkan apa adanya?
+                    # User minta "grafik ... tetap lurus". Jadi semua satuan harus lurus.
+                    # Kita hitung konversi sederhana untuk locked value
+                    val_dingin_f = (val_dingin_c * 9/5) + 32
+                    val_dingin_k = val_dingin_c + 273.15
+                    val_dingin_r = val_dingin_c * 4/5
+                    
+                    val_panas_f = (val_panas_c * 9/5) + 32
+                    val_panas_k = val_panas_c + 273.15
+                    val_panas_r = val_panas_c * 4/5
+                else:
+                    val_dingin_c = dingin["C"]
+                    val_dingin_f = dingin["F"]
+                    val_dingin_k = dingin["K"]
+                    val_dingin_r = dingin["R"]
+                    
+                    val_panas_c = panas["C"]
+                    val_panas_f = panas["F"]
+                    val_panas_k = panas["K"]
+                    val_panas_r = panas["R"]
+
+                data_dingin_c.append(val_dingin_c)
+                data_dingin_f.append(val_dingin_f)
+                data_dingin_k.append(val_dingin_k)
+                data_dingin_r.append(val_dingin_r)
                 
                 # Simpan data Air Panas
-                data_panas_c.append(panas["C"])
-                data_panas_f.append(panas["F"])
-                data_panas_k.append(panas["K"])
-                data_panas_r.append(panas["R"])
+                data_panas_c.append(val_panas_c)
+                data_panas_f.append(val_panas_f)
+                data_panas_k.append(val_panas_k)
+                data_panas_r.append(val_panas_r)
                 
                 # Simpan data Air Campuran
-                data_campuran_c.append(campuran["C"])
-                data_campuran_f.append(campuran["F"])
-                data_campuran_k.append(campuran["K"])
-                data_campuran_r.append(campuran["R"])
+                # Cek apakah status finished (freeze result)
+                is_finished_global = mixing_state_global.get('is_finished', False)
+                
+                if is_finished_global:
+                    # Gunakan nilai final yang disimpan
+                    val_campuran_c = mixing_state_global.get('final_campuran', 0)
+                    val_campuran_f = (val_campuran_c * 9/5) + 32
+                    val_campuran_k = val_campuran_c + 273.15
+                    val_campuran_r = val_campuran_c * 4/5
+                else:
+                    # Gunakan data real-time
+                    val_campuran_c = campuran["C"]
+                    val_campuran_f = campuran["F"]
+                    val_campuran_k = campuran["K"]
+                    val_campuran_r = campuran["R"]
+                
+                data_campuran_c.append(val_campuran_c)
+                data_campuran_f.append(val_campuran_f)
+                data_campuran_k.append(val_campuran_k)
+                data_campuran_r.append(val_campuran_r)
                 
                 # Hitung dan simpan nilai kalor berdasarkan mode saat ini
                 if mixing_state_global['is_mixing']:
                     # Mode pencampuran - hitung kalor dan simpan secara permanen
                     m_dingin = mixing_state_global['massa_dingin']
                     m_panas = mixing_state_global['massa_panas']
-                    q_lepas = abs(m_panas * C_AIR * (panas["C"] - campuran["C"]))
-                    q_terima = abs(m_dingin * C_AIR * (campuran["C"] - dingin["C"]))
+                    # Gunakan nilai yang (mungkin) sudah di-lock
+                    q_lepas = abs(m_panas * C_AIR * (val_panas_c - val_campuran_c))
+                    q_terima = abs(m_dingin * C_AIR * (val_campuran_c - val_dingin_c))
                     kalor_lepas_buffer.append(q_lepas)
                     kalor_terima_buffer.append(q_terima)
+                elif is_finished_global:
+                    # Jika finished, kita tetap append nilai kalor terakhir (atau 0?)
+                    # Biasanya user ingin melihat nilai kalor terakhir yang "valid"
+                    # Ambil nilai terakhir dari buffer jika ada
+                    last_q_lepas = kalor_lepas_buffer[-1] if len(kalor_lepas_buffer) > 0 else 0.0
+                    last_q_terima = kalor_terima_buffer[-1] if len(kalor_terima_buffer) > 0 else 0.0
+                    kalor_lepas_buffer.append(last_q_lepas)
+                    kalor_terima_buffer.append(last_q_terima)
                 else:
                     # Mode pengukuran awal - simpan 0
                     kalor_lepas_buffer.append(0.0)
@@ -149,11 +207,11 @@ def on_message(client, userdata, msg):
                 ts_save = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 append_row_to_excel([
                     ts_save, 
-                    dingin["C"], dingin["F"], dingin["K"], dingin["R"],
-                    panas["C"], panas["F"], panas["K"], panas["R"],
+                    val_dingin_c, val_dingin_f, val_dingin_k, val_dingin_r,
+                    val_panas_c, val_panas_f, val_panas_k, val_panas_r,
                     campuran["C"], campuran["F"], campuran["K"], campuran["R"]
                 ])
-                print(f"[MQTT] Data diterima: Dingin={dingin['C']}°C, Panas={panas['C']}°C, Campuran={campuran['C']}°C")
+                print(f"[MQTT] Data diterima: Dingin={val_dingin_c:.2f}°C, Panas={val_panas_c:.2f}°C, Campuran={campuran['C']}°C")
     except Exception as e:
         print("Gagal parsing data:", e)
 
@@ -180,6 +238,23 @@ app.layout = html.Div([
     
     # ====== TOMBOL PENCAMPURAN & STATUS BADGE ======
     html.Div([
+        # Tombol Lock Sensor
+        html.Button(
+            id='btn-lock-sensors',
+            children='🔒 Kunci Suhu Awal',
+            n_clicks=0,
+            style={
+                'padding': '15px 30px',
+                'fontSize': '18px',
+                'fontWeight': 'bold',
+                'backgroundColor': '#17a2b8', # Info color
+                'color': 'white',
+                'border': 'none',
+                'borderRadius': '10px',
+                'cursor': 'pointer',
+                'marginRight': '20px'
+            }
+        ),
         # Tombol Toggle Pencampuran
         html.Button(
             id='btn-toggle-mixing',
@@ -213,6 +288,8 @@ app.layout = html.Div([
         ),
         # Store untuk menyimpan state pencampuran
         dcc.Store(id='mixing-state', data={'is_mixing': False, 'start_index': -1}),
+        # Store untuk menyimpan state lock sensor
+        dcc.Store(id='lock-state', data={'is_locked': False, 'locked_temp_dingin': 0, 'locked_temp_panas': 0}),
     ], style={'textAlign': 'center', 'marginBottom': '20px'}),
     
     # Legend Sensor
@@ -224,43 +301,31 @@ app.layout = html.Div([
     
     # Kontrol dan Card Section
     html.Div([
-        # Input Massa untuk masing-masing air
+        # Input Volume untuk masing-masing air
         html.Div([
             html.Div([
-                html.Label("Massa Air Dingin (kg):", style={'color': COLOR_DINGIN}),
+                html.Label("Volume Air Dingin (Liter):", style={'color': COLOR_DINGIN}),
                 dcc.Input(
-                    id='massa-dingin-input',
+                    id='volume-dingin-input',
                     type='number',
                     value=1,
                     min=0,
-                    step=0.01,
+                    step='any',
                     style={'marginLeft': '10px', 'width': '80px'}
                 ),
             ], style={'display': 'inline-block', 'marginRight': '30px'}),
             
             html.Div([
-                html.Label("Massa Air Panas (kg):", style={'color': COLOR_PANAS}),
+                html.Label("Volume Air Panas (Liter):", style={'color': COLOR_PANAS}),
                 dcc.Input(
-                    id='massa-panas-input',
+                    id='volume-panas-input',
                     type='number',
                     value=1,
                     min=0,
-                    step=0.01,
+                    step='any',
                     style={'marginLeft': '10px', 'width': '80px'}
                 ),
             ], style={'display': 'inline-block', 'marginRight': '30px'}),
-            
-            html.Div([
-                html.Label("Massa Air Campuran (kg):", style={'color': COLOR_CAMPURAN}),
-                dcc.Input(
-                    id='massa-campuran-input',
-                    type='number',
-                    value=2,
-                    min=0,
-                    step=0.01,
-                    style={'marginLeft': '10px', 'width': '80px'}
-                ),
-            ], style={'display': 'inline-block'}),
         ], style={'marginBottom': '20px'}),
 
         # Card Kalor - untuk menampilkan kalor yang dipindahkan
@@ -395,6 +460,85 @@ app.layout = html.Div([
     dcc.Interval(id='update', interval=2000, n_intervals=0)
 ])
 
+# ====== CALLBACK UNTUK LOCK SENSOR ======
+@app.callback(
+    [Output('lock-state', 'data'),
+     Output('btn-lock-sensors', 'children'),
+     Output('btn-lock-sensors', 'style')],
+    [Input('btn-lock-sensors', 'n_clicks')],
+    [State('lock-state', 'data')]
+)
+def toggle_lock(n_clicks, current_state):
+    if n_clicks == 0:
+        return (
+            {'is_locked': False, 'locked_temp_dingin': 0, 'locked_temp_panas': 0},
+            '🔒 Kunci Suhu Awal',
+            {
+                'padding': '15px 30px',
+                'fontSize': '18px',
+                'fontWeight': 'bold',
+                'backgroundColor': '#17a2b8',
+                'color': 'white',
+                'border': 'none',
+                'borderRadius': '10px',
+                'cursor': 'pointer',
+                'marginRight': '20px'
+            }
+        )
+    
+    is_locked = current_state.get('is_locked', False)
+    
+    if not is_locked:
+        # Kunci sensor - ambil nilai terakhir dari buffer
+        last_dingin = data_dingin_c[-1] if len(data_dingin_c) > 0 else 0
+        last_panas = data_panas_c[-1] if len(data_panas_c) > 0 else 0
+        
+        # Ambil timestamp saat ini untuk referensi tabel
+        lock_ts = datetime.now().strftime("%H:%M:%S")
+        
+        # Update global state
+        lock_state_global['is_locked'] = True
+        lock_state_global['locked_dingin'] = last_dingin
+        lock_state_global['locked_panas'] = last_panas
+        
+        return (
+            {'is_locked': True, 'locked_temp_dingin': last_dingin, 'locked_temp_panas': last_panas, 'lock_timestamp': lock_ts},
+            '🔓 Buka Kunci Suhu',
+            {
+                'padding': '15px 30px',
+                'fontSize': '18px',
+                'fontWeight': 'bold',
+                'backgroundColor': '#6c757d', # Grey
+                'color': 'white',
+                'border': 'none',
+                'borderRadius': '10px',
+                'cursor': 'pointer',
+                'marginRight': '20px'
+            }
+        )
+    else:
+        # Buka kunci
+        # Update global state
+        lock_state_global['is_locked'] = False
+        lock_state_global['locked_dingin'] = 0.0
+        lock_state_global['locked_panas'] = 0.0
+        
+        return (
+            {'is_locked': False, 'locked_temp_dingin': 0, 'locked_temp_panas': 0, 'lock_timestamp': None},
+            '🔒 Kunci Suhu Awal',
+            {
+                'padding': '15px 30px',
+                'fontSize': '18px',
+                'fontWeight': 'bold',
+                'backgroundColor': '#17a2b8',
+                'color': 'white',
+                'border': 'none',
+                'borderRadius': '10px',
+                'cursor': 'pointer',
+                'marginRight': '20px'
+            }
+        )
+
 # ====== CALLBACK UNTUK TOGGLE PENCAMPURAN ======
 @app.callback(
     [Output('mixing-state', 'data'),
@@ -409,7 +553,7 @@ def toggle_mixing(n_clicks, current_state):
     if n_clicks == 0:
         # Initial state
         return (
-            {'is_mixing': False, 'start_index': -1},
+            {'is_mixing': False, 'is_finished': False, 'final_campuran': 0},
             '🔄 Mulai Pencampuran',
             {
                 'padding': '15px 30px',
@@ -435,19 +579,19 @@ def toggle_mixing(n_clicks, current_state):
         )
     
     is_mixing = current_state.get('is_mixing', False)
+    is_finished = current_state.get('is_finished', False)
     
-    if not is_mixing:
-        # Mulai pencampuran - update global state
+    if not is_mixing and not is_finished:
+        # Tahap 1: Mulai Pencampuran
         mixing_state_global['is_mixing'] = True
-        start_idx = len(data_dingin_c) - 1 if len(data_dingin_c) > 0 else 0
         return (
-            {'is_mixing': True, 'start_index': start_idx},
-            '⏹️ Selesai Pencampuran',
+            {'is_mixing': True, 'is_finished': False, 'final_campuran': 0},
+            '⏹️ Stop & Kunci Hasil',
             {
                 'padding': '15px 30px',
                 'fontSize': '18px',
                 'fontWeight': 'bold',
-                'backgroundColor': '#dc3545',
+                'backgroundColor': '#dc3545', # Merah
                 'color': 'white',
                 'border': 'none',
                 'borderRadius': '10px',
@@ -459,18 +603,58 @@ def toggle_mixing(n_clicks, current_state):
                 'padding': '10px 20px',
                 'fontSize': '16px',
                 'fontWeight': 'bold',
-                'backgroundColor': '#fd7e14',
+                'backgroundColor': '#fd7e14', # Orange
                 'color': 'white',
                 'borderRadius': '20px',
                 'display': 'inline-block',
                 'animation': 'pulse 1s infinite'
             }
         )
-    else:
-        # Selesai pencampuran - update global state
-        mixing_state_global['is_mixing'] = False
+        
+    elif is_mixing and not is_finished:
+        # Tahap 2: Selesai & Freeze Hasil
+        mixing_state_global['is_mixing'] = False # Stop hitung kalor baru
+        
+        # Ambil suhu campuran terakhir untuk di-freeze
+        last_campuran = data_campuran_c[-1] if len(data_campuran_c) > 0 else 0
+        
+        # Update global state agar on_message tahu harus freeze
+        mixing_state_global['is_finished'] = True
+        mixing_state_global['final_campuran'] = last_campuran
+        
         return (
-            {'is_mixing': False, 'start_index': -1},
+            {'is_mixing': False, 'is_finished': True, 'final_campuran': last_campuran},
+            '🔄 Reset / Ulangi',
+            {
+                'padding': '15px 30px',
+                'fontSize': '18px',
+                'fontWeight': 'bold',
+                'backgroundColor': '#007bff', # Biru
+                'color': 'white',
+                'border': 'none',
+                'borderRadius': '10px',
+                'cursor': 'pointer',
+                'marginRight': '20px'
+            },
+            '❄️ Mode: Hasil Terkunci',
+            {
+                'padding': '10px 20px',
+                'fontSize': '16px',
+                'fontWeight': 'bold',
+                'backgroundColor': '#17a2b8', # Cyan
+                'color': 'white',
+                'borderRadius': '20px',
+                'display': 'inline-block'
+            }
+        )
+        
+    else:
+        # Tahap 3: Reset ke Awal
+        mixing_state_global['is_finished'] = False
+        mixing_state_global['final_campuran'] = 0
+        
+        return (
+            {'is_mixing': False, 'is_finished': False, 'final_campuran': 0},
             '🔄 Mulai Pencampuran',
             {
                 'padding': '15px 30px',
@@ -506,38 +690,72 @@ def toggle_mixing(n_clicks, current_state):
      Output('kalor-dilepas-output', 'children'),
      Output('suhu-campuran-output', 'children')],
     [Input('update', 'n_intervals'),
-     Input('massa-dingin-input', 'value'),
-     Input('massa-panas-input', 'value'),
-     Input('massa-campuran-input', 'value'),
-     Input('mixing-state', 'data')]
+     Input('volume-dingin-input', 'value'),
+     Input('volume-panas-input', 'value'),
+     Input('mixing-state', 'data'),
+     Input('lock-state', 'data')]
 )
-def update_graph(n, massa_dingin, massa_panas, massa_campuran, mixing_state):
-    # Update global state dengan nilai massa terbaru
-    if massa_dingin and massa_dingin > 0:
+def update_graph(n, vol_dingin, vol_panas, mixing_state, lock_state):
+    # Hitung massa dari volume
+    # m = rho * V (V dalam m^3) -> V_liter / 1000
+    massa_dingin = 0
+    massa_panas = 0
+    
+    if vol_dingin is not None and vol_dingin > 0:
+        massa_dingin = RHO_AIR_DINGIN * (vol_dingin / 1000)
         mixing_state_global['massa_dingin'] = massa_dingin
-    if massa_panas and massa_panas > 0:
+        
+    if vol_panas is not None and vol_panas > 0:
+        massa_panas = RHO_AIR_PANAS * (vol_panas / 1000)
         mixing_state_global['massa_panas'] = massa_panas
         
-    if len(data_dingin_c) < 2 or massa_dingin is None or massa_panas is None or massa_dingin <= 0 or massa_panas <= 0:
+    if len(data_dingin_c) < 2 or massa_dingin <= 0 or massa_panas <= 0:
         empty_fig = go.Figure()
         empty_fig.update_layout(title="Menunggu data...")
-        status_msg = "Menunggu data dari ESP32 atau masukkan nilai massa yang valid (>0)..."
+        status_msg = "Menunggu data dari ESP32 atau masukkan nilai volume yang valid (>0)..."
         kalor_msg = "0 J"
         suhu_msg = "--- °C"
         return empty_fig, empty_fig, empty_fig, empty_fig, status_msg, [], kalor_msg, kalor_msg, suhu_msg
     
     # Ambil status pencampuran
     is_mixing = mixing_state.get('is_mixing', False) if mixing_state else False
-    start_index = mixing_state.get('start_index', -1) if mixing_state else -1
+    is_finished = mixing_state.get('is_finished', False) if mixing_state else False
+    final_campuran_c = mixing_state.get('final_campuran', 0) if mixing_state else 0
+    
+    # Ambil status lock
+    is_locked = lock_state.get('is_locked', False) if lock_state else False
+    lock_timestamp = lock_state.get('lock_timestamp', None) if lock_state else None
     
     T_dingin = data_dingin_c[-1]
     T_panas = data_panas_c[-1]
-    T_campuran = data_campuran_c[-1]
+    
+    # LOGIKA UTAMA UNTUK POIN 5:
+    # Jika is_finished (Selesai & Kunci), gunakan nilai final_campuran yang disimpan
+    # Namun, untuk grafik, kita gunakan data_campuran_c yang sudah dimodifikasi di on_message
+    # (on_message akan append nilai final jika is_finished=True, sehingga history tetap ada)
+    if is_finished:
+        T_campuran = final_campuran_c
+        # Gunakan data dari buffer yang sudah di-handle oleh on_message
+        plot_campuran_c = list(data_campuran_c)
+        plot_campuran_f = list(data_campuran_f)
+        plot_campuran_k = list(data_campuran_k)
+        plot_campuran_r = list(data_campuran_r)
+    else:
+        # Jika belum selesai, gunakan data real-time
+        T_campuran = data_campuran_c[-1]
+        plot_campuran_c = list(data_campuran_c)
+        plot_campuran_f = list(data_campuran_f)
+        plot_campuran_k = list(data_campuran_k)
+        plot_campuran_r = list(data_campuran_r)
     
     # Perhitungan Kalor Asas Black - HANYA jika dalam mode pencampuran
-    if is_mixing:
+    if is_mixing or is_finished:
         # Q lepas (air panas) = m_panas * c * (T_awal_panas - T_campuran)
         # Q terima (air dingin) = m_dingin * c * (T_campuran - T_awal_dingin)
+        # Jika locked, T_awal diambil dari nilai locked (yang sudah di-append ke buffer)
+        # Karena kita sudah memodifikasi on_message untuk append nilai locked jika is_locked=True,
+        # maka T_dingin dan T_panas (data_dingin_c[-1]) sudah pasti nilai locked tersebut.
+        # Jadi rumus ini tetap valid tanpa perubahan.
         Q_lepas = massa_panas * C_AIR * (T_panas - T_campuran)
         Q_terima = massa_dingin * C_AIR * (T_campuran - T_dingin)
         kalor_lepas_str = f"{abs(Q_lepas):.2f} J"
@@ -564,7 +782,7 @@ def update_graph(n, massa_dingin, massa_panas, massa_campuran, mixing_state):
         marker=dict(size=6)
     ))
     fig_c.add_trace(go.Scatter(
-        x=list(timestamps), y=list(data_campuran_c), 
+        x=list(timestamps), y=plot_campuran_c, 
         mode='lines+markers', name='Air Campuran',
         line=dict(color=COLOR_CAMPURAN, width=2),
         marker=dict(size=6)
@@ -592,7 +810,7 @@ def update_graph(n, massa_dingin, massa_panas, massa_campuran, mixing_state):
         marker=dict(size=6)
     ))
     fig_f.add_trace(go.Scatter(
-        x=list(timestamps), y=list(data_campuran_f), 
+        x=list(timestamps), y=plot_campuran_f, 
         mode='lines+markers', name='Air Campuran',
         line=dict(color=COLOR_CAMPURAN, width=2),
         marker=dict(size=6)
@@ -620,7 +838,7 @@ def update_graph(n, massa_dingin, massa_panas, massa_campuran, mixing_state):
         marker=dict(size=6)
     ))
     fig_k.add_trace(go.Scatter(
-        x=list(timestamps), y=list(data_campuran_k), 
+        x=list(timestamps), y=plot_campuran_k, 
         mode='lines+markers', name='Air Campuran',
         line=dict(color=COLOR_CAMPURAN, width=2),
         marker=dict(size=6)
@@ -648,7 +866,7 @@ def update_graph(n, massa_dingin, massa_panas, massa_campuran, mixing_state):
         marker=dict(size=6)
     ))
     fig_r.add_trace(go.Scatter(
-        x=list(timestamps), y=list(data_campuran_r), 
+        x=list(timestamps), y=plot_campuran_r, 
         mode='lines+markers', name='Air Campuran',
         line=dict(color=COLOR_CAMPURAN, width=2),
         marker=dict(size=6)
@@ -673,27 +891,61 @@ def update_graph(n, massa_dingin, massa_panas, massa_campuran, mixing_state):
         kalor_terima_history.insert(0, 0.0)
 
     # Siapkan data untuk tabel, data terbaru di atas
+    # Gunakan plot_campuran_* agar nilai yang ditampilkan di tabel juga ikut "beku" saat finish
     table_data = []
+    
+    # Pastikan semua list memiliki panjang yang sama sebelum zip
+    min_len = min(len(timestamps), len(data_dingin_c), len(plot_campuran_c), len(kalor_lepas_history))
+    
     data_list = list(zip(
-        timestamps, 
-        data_dingin_c, data_dingin_f, data_dingin_k, data_dingin_r,
-        data_panas_c, data_panas_f, data_panas_k, data_panas_r,
-        data_campuran_c, data_campuran_f, data_campuran_k, data_campuran_r,
-        kalor_lepas_history, kalor_terima_history
+        list(timestamps)[-min_len:], 
+        list(data_dingin_c)[-min_len:], list(data_dingin_f)[-min_len:], list(data_dingin_k)[-min_len:], list(data_dingin_r)[-min_len:],
+        list(data_panas_c)[-min_len:], list(data_panas_f)[-min_len:], list(data_panas_k)[-min_len:], list(data_panas_r)[-min_len:],
+        plot_campuran_c[-min_len:], plot_campuran_f[-min_len:], plot_campuran_k[-min_len:], plot_campuran_r[-min_len:],
+        kalor_lepas_history[-min_len:], kalor_terima_history[-min_len:]
     ))
     
     for row in reversed(data_list):
         ts, dc, df, dk, dr, pc, pf, pk, pr, cc, cf, ck, cr, ql, qt = row
+        
+        # Jika locked, tampilkan "-" untuk kolom Air Dingin dan Panas
+        # HANYA jika timestamp row >= lock_timestamp (data setelah dikunci)
+        should_mask = False
+        if is_locked and lock_timestamp:
+            # Bandingkan string waktu "HH:MM:SS"
+            # Asumsi dalam satu hari yang sama
+            if ts >= lock_timestamp:
+                should_mask = True
+        
+        if should_mask:
+            dc_str = "-"
+            df_str = "-"
+            dk_str = "-"
+            dr_str = "-"
+            pc_str = "-"
+            pf_str = "-"
+            pk_str = "-"
+            pr_str = "-"
+        else:
+            dc_str = f"{dc:.2f}"
+            df_str = f"{df:.2f}"
+            dk_str = f"{dk:.2f}"
+            dr_str = f"{dr:.2f}"
+            pc_str = f"{pc:.2f}"
+            pf_str = f"{pf:.2f}"
+            pk_str = f"{pk:.2f}"
+            pr_str = f"{pr:.2f}"
+            
         table_data.append({
             'waktu': ts,
-            'dingin_c': f"{dc:.2f}",
-            'dingin_f': f"{df:.2f}",
-            'dingin_k': f"{dk:.2f}",
-            'dingin_r': f"{dr:.2f}",
-            'panas_c': f"{pc:.2f}",
-            'panas_f': f"{pf:.2f}",
-            'panas_k': f"{pk:.2f}",
-            'panas_r': f"{pr:.2f}",
+            'dingin_c': dc_str,
+            'dingin_f': df_str,
+            'dingin_k': dk_str,
+            'dingin_r': dr_str,
+            'panas_c': pc_str,
+            'panas_f': pf_str,
+            'panas_k': pk_str,
+            'panas_r': pr_str,
             'campuran_c': f"{cc:.2f}",
             'campuran_f': f"{cf:.2f}",
             'campuran_k': f"{ck:.2f}",
@@ -703,8 +955,16 @@ def update_graph(n, massa_dingin, massa_panas, massa_campuran, mixing_state):
         })
     
     # Status text dengan indikator mode
-    mode_indicator = "🔥 PENCAMPURAN" if is_mixing else "📊 PENGUKURAN"
-    status_text = f"📡 {MQTT_TOPIC} | {mode_indicator} | Terakhir: {timestamps[-1]} | Dingin: {T_dingin:.1f}°C | Panas: {T_panas:.1f}°C | Campuran: {T_campuran:.1f}°C"
+    if is_finished:
+        mode_indicator = "🏁 SELESAI (HASIL DIKUNCI)"
+    elif is_mixing:
+        mode_indicator = "⚗️ PENCAMPURAN BERLANGSUNG"
+    else:
+        mode_indicator = "📊 PENGUKURAN AWAL"
+        
+    lock_indicator = "🔒 SENSOR AWAL TERKUNCI" if is_locked else "🔓 SENSOR AWAL LIVE"
+    
+    status_text = f"📡 {MQTT_TOPIC} | {mode_indicator} | {lock_indicator} | Terakhir: {timestamps[-1]} | Dingin: {T_dingin:.1f}°C | Panas: {T_panas:.1f}°C | Campuran: {T_campuran:.1f}°C"
     return fig_c, fig_f, fig_k, fig_r, status_text, table_data, kalor_terima_str, kalor_lepas_str, suhu_campuran_str
 
 @app.callback(

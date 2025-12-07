@@ -4,8 +4,8 @@
 #include <DallasTemperature.h>
 
 // ====== KONFIGURASI WIFI & MQTT ======
-const char* ssid = "TP-LINK_46F2";         // Ganti dengan nama WiFi kamu
-const char* password = "admin123";    // Ganti dengan password WiFi sekarang
+const char* ssid = "baksoikan";         // Ganti dengan nama WiFi kamu
+const char* password = "baksoikansalmon";    // Ganti dengan password WiFi sekarang
 const char* mqtt_server = "broker.hivemq.com";
 const int mqtt_port = 1883;
 const char* mqtt_topic = "edukit/suhu";
