@@ -304,11 +304,11 @@ app.layout = html.Div([
         # Input Volume untuk masing-masing air
         html.Div([
             html.Div([
-                html.Label("Volume Air Dingin (Liter):", style={'color': COLOR_DINGIN}),
+                html.Label("Volume Air Dingin (mL):", style={'color': COLOR_DINGIN}),
                 dcc.Input(
                     id='volume-dingin-input',
                     type='number',
-                    value=1,
+                    value=250,
                     min=0,
                     step='any',
                     style={'marginLeft': '10px', 'width': '80px'}
@@ -316,11 +316,11 @@ app.layout = html.Div([
             ], style={'display': 'inline-block', 'marginRight': '30px'}),
             
             html.Div([
-                html.Label("Volume Air Panas (Liter):", style={'color': COLOR_PANAS}),
+                html.Label("Volume Air Panas (mL):", style={'color': COLOR_PANAS}),
                 dcc.Input(
                     id='volume-panas-input',
                     type='number',
-                    value=1,
+                    value=250,
                     min=0,
                     step='any',
                     style={'marginLeft': '10px', 'width': '80px'}
@@ -697,16 +697,16 @@ def toggle_mixing(n_clicks, current_state):
 )
 def update_graph(n, vol_dingin, vol_panas, mixing_state, lock_state):
     # Hitung massa dari volume
-    # m = rho * V (V dalam m^3) -> V_liter / 1000
+    # m = rho * V (V dalam m^3) -> V_mL / 1,000,000
     massa_dingin = 0
     massa_panas = 0
     
     if vol_dingin is not None and vol_dingin > 0:
-        massa_dingin = RHO_AIR_DINGIN * (vol_dingin / 1000)
+        massa_dingin = RHO_AIR_DINGIN * (vol_dingin / 1000000)
         mixing_state_global['massa_dingin'] = massa_dingin
         
     if vol_panas is not None and vol_panas > 0:
-        massa_panas = RHO_AIR_PANAS * (vol_panas / 1000)
+        massa_panas = RHO_AIR_PANAS * (vol_panas / 1000000)
         mixing_state_global['massa_panas'] = massa_panas
         
     if len(data_dingin_c) < 2 or massa_dingin <= 0 or massa_panas <= 0:
